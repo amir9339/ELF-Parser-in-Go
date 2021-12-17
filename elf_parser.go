@@ -15,11 +15,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"os"
+
+	"github.com/urfave/cli/v2"
 )
 
 const (
-	ELF_FILENAME                  = "binary-samples-master/elf-Linux-x86-bash"
+	ELF_FILENAME                  = "binary_examples/elf-Linux-x86-bash"
 	ELFMAGIC                      = "\177ELF"
 	EI_NIDENT                     = 16 // Size of e_ident array
 	ElfHeaderFileInfoPrintLine    = "Class:\t\t\t\t\t%s\nData:\t\t\t\t\t%s\nVersion:\t\t\t\t%d\nOS/ABI:\t\t\t\t\t%s\nABI Version:\t\t\t\t%d\nFile Type:\t\t\t\t%s\nSupported machine:\t\t\t%s\n"
@@ -27,9 +30,9 @@ const (
 	ProgramHeaderGeneralInfo      = "ELF file type is %s\nEntry point 0x%x\nThere are %d program headers, starting at offset %d\n\nProgram headers:\n"
 	ProgramHeaderTableColumns     = "  Type\t\tOffset\t\tVirtAddr\t\tPhysAddr\t\tFileSiz\t\tMemSiz\t\tFlags\t\tAlign\n"
 	ProgramHeaderTableRow         = "  %s\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t%d\t%s\n\n"
-	SectionHeaderGeneralInfo      = "There are %d section headers, starting at offset 0x%d\n\nSection Headers:\n"
+	SectionHeaderGeneralInfo      = "There are %d section headers, starting at offset 0x%s:\n\nSection Headers:\n"
 	SectionHeaderTableColumns     = "  Name\t\tType\t\tAddress\t\tOffset\t\tSize\t\tEntSize\t\tFlags\tLink\t\tInfo\t\tAlign\n"
-	SectionHeaderTableRow         = "  %s\t%s\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t%s"
+	SectionHeaderTableRow         = "  %s\t%s\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t%s\n"
 )
 
 type Elf32_Ehdr struct {
@@ -85,6 +88,7 @@ type ReadableProgramHeaderTableEntry struct {
 }
 
 type ReadableSectionHeaderTableEntry struct {
+	NameIndex uint32
 	Name      string
 	Type      string
 	Address   uint32
@@ -156,6 +160,8 @@ func ParseIdent(e_ident_array []byte) (bool, string, string, int, string, int) {
 		class = "ELF32"
 	case 2:
 		class = "ELF64"
+	default:
+		panic("Invalid class\n")
 	}
 
 	switch ei_data {
@@ -165,9 +171,11 @@ func ParseIdent(e_ident_array []byte) (bool, string, string, int, string, int) {
 		endian = "Little-endian"
 	case 2:
 		endian = "Big-endian"
+	default:
+		panic("Invalid endian\n")
 	}
 
-	// Doesn't support *all* abi value from the table specified in:
+	// Doesn't support *all* different abi values from the table specified in:
 	//     http://www.sco.com/developers/gabi/latest/ch4.eheader.html
 	switch ei_osabi {
 	case 0:
@@ -186,6 +194,10 @@ func ParseIdent(e_ident_array []byte) (bool, string, string, int, string, int) {
 		osabi = "AIX"
 	case 7:
 		osabi = "FreeBSD"
+	case 8:
+		osabi = "TRU64 UNIX"
+	case 11:
+		osabi = "Novell Modesto"
 	default:
 		osabi = "Could not detect OS ABI"
 	}
@@ -338,6 +350,123 @@ func ParseProgramHeaderTable(file_bytes []byte, elf_header Elf32_Ehdr) []Readabl
 	return entries
 }
 
+func ParseSectionHeaderTableEntry(sh_entry Elf32_Shdr) ReadableSectionHeaderTableEntry {
+	/*
+		This function converts SectionHeader struct to a readable entry.
+	*/
+
+	// Create entry struct instance and fill with known values (Values that doesn't requires parsing)
+	entry := ReadableSectionHeaderTableEntry{
+		Address:   sh_entry.SH_addr,
+		Offset:    sh_entry.SH_offset,
+		Size:      sh_entry.SH_size,
+		Link:      sh_entry.SH_link,
+		Info:      sh_entry.SH_info,
+		AddrAlign: sh_entry.SH_addralign,
+		EntSize:   sh_entry.SH_entsize,
+		NameIndex: sh_entry.SH_name}
+
+	switch sh_entry.SH_type {
+	case 0:
+		entry.Type = "NULL"
+	case 1:
+		entry.Type = "PROGBITS"
+	case 2:
+		entry.Type = "SYMTAB"
+	case 3:
+		entry.Type = "STRTAB"
+	case 4:
+		entry.Type = "RELA"
+	case 5:
+		entry.Type = "HASH"
+	case 6:
+		entry.Type = "DYNAMIC"
+	case 7:
+		entry.Type = "NOTE"
+	case 8:
+		entry.Type = "NOBITS"
+	case 9:
+		entry.Type = "REL"
+	case 10:
+		entry.Type = "SHLIB"
+	case 11:
+		entry.Type = "DYNSYM"
+	case 12:
+		entry.Type = "LOPROC, HIPROC"
+	case 13:
+		entry.Type = "LOUSER"
+	case 14:
+		entry.Type = "HIUSER"
+	default:
+		entry.Type = "Unknown"
+	}
+
+	// There are more flags, they are specified in: https://docs.oracle.com/cd/E19683-01/817-3677/6mj8mbtc9/index.html#chapter6-10675
+	switch sh_entry.SH_flags {
+	case 1:
+		entry.Flags = "WRITE"
+	case 2:
+		entry.Flags = "ALLOC"
+	case 4:
+		entry.Flags = "EXECINSTR"
+	default:
+		entry.Flags = "Unknown"
+	}
+
+	return entry
+}
+
+func GetStringSize(bytes_array []byte, offset int) int {
+	/*
+		This function find the size of a string in a null terminated strings byte array.
+		It returns the size of the string.
+	*/
+
+	// Iterate each byte in the array until a null byte is found
+	for i := offset; i < len(bytes_array); i++ {
+		if bytes_array[i] == 0 {
+			return i - offset
+		}
+	}
+	return len(bytes_array)
+}
+
+func ParseSectionHeaderTable(file_bytes []byte, elf_header Elf32_Ehdr) []ReadableSectionHeaderTableEntry {
+	/*
+		This function parses SH Table and extract the data from it. The columns are:
+			Name, Type, Address, Offset, Size, Link, Info, AddrAlign, EntSize, Flags
+		It also parses the section header string table and returns it.
+	*/
+
+	entries := make([]ReadableSectionHeaderTableEntry, 1)
+
+	// Iterate each entry in section header table
+	sh_offset := int(elf_header.E_shoff)         // Table offset in file
+	sh_entry_size := int(elf_header.E_shentsize) // Size of each entry in table
+	var i uint16                                 // Counter
+	var entry_offset int                         // Current entry pointer
+	for i = 0; i < elf_header.E_shnum; i++ {
+		s_header := Elf32_Shdr{}                            // Declare s_header
+		entry_offset = sh_offset + (sh_entry_size * int(i)) // Current entry offset
+		binary.Read(bytes.NewBuffer(file_bytes[entry_offset:]), binary.LittleEndian, &s_header)
+		readable_sh_entry := ParseSectionHeaderTableEntry(s_header)
+		entries = append(entries, readable_sh_entry)
+	}
+
+	section_header_string_table_offset := entries[elf_header.E_shstrndx+1].Offset
+	section_header_string_table_size := entries[elf_header.E_shstrndx+1].Size
+	section_header_string_table := file_bytes[section_header_string_table_offset : section_header_string_table_offset+section_header_string_table_size]
+
+	// Iterate over section header table and fill the name field
+	for i := 0; i < len(entries); i++ {
+		name_index := entries[i].NameIndex
+		name_size := GetStringSize(section_header_string_table, int(name_index))
+		name := string(section_header_string_table[name_index : int(name_index)+name_size])
+		entries[i].Name = name
+	}
+	return entries
+}
+
 func PrintElfHeaderData(elf_header Elf32_Ehdr) {
 	_, class, endian, version, osabi, abi_version := ParseIdent(elf_header.E_ident[:])
 	object_type, machine := ParseElfHeader(elf_header)
@@ -371,11 +500,26 @@ func PrintProgramHeaderData(elf_header Elf32_Ehdr, ph_entries []ReadableProgramH
 		elf_header.E_phnum,
 		elf_header.E_phoff,
 	)
-	fmt.Printf(ProgramHeaderTableColumns)
+	fmt.Print(ProgramHeaderTableColumns)
 
 	// Iterate over entries slice
 	for _, entry := range ph_entries[1:] {
 		fmt.Printf(ProgramHeaderTableRow, entry.Type, entry.Offset, entry.VirtAddr, entry.PhysAddr, entry.FileSiz, entry.MemSiz, entry.Align, entry.Flags)
+	}
+}
+
+func PrintSectionHeaderData(elf_header Elf32_Ehdr, sh_entries []ReadableSectionHeaderTableEntry) {
+	/*
+		This is the print function for Section Header extraction.
+		It prints Section header tables as well as more basic info about the ELF
+	*/
+
+	sh_offset := fmt.Sprintf("%x", elf_header.E_shoff)
+	fmt.Printf(SectionHeaderGeneralInfo, elf_header.E_shnum, sh_offset)
+	fmt.Print(SectionHeaderTableColumns)
+
+	for _, entry := range sh_entries[1:] {
+		fmt.Printf(SectionHeaderTableRow, entry.Name, entry.Type, entry.Address, entry.Offset, entry.Size, entry.Link, entry.Info, entry.AddrAlign, entry.EntSize, entry.Flags)
 	}
 }
 
@@ -390,8 +534,28 @@ func main() {
 
 	elf_header := Elf32_Ehdr{}
 	binary.Read(bytes.NewBuffer(file_bytes), binary.LittleEndian, &elf_header)
-	ph_entries := ParseProgramHeaderTable(file_bytes, elf_header)
 
-	PrintElfHeaderData(elf_header)
-	PrintProgramHeaderData(elf_header, ph_entries)
+	//ph_entries := ParseProgramHeaderTable(file_bytes, elf_header)
+
+	// PrintElfHeaderData(elf_header)
+	//PrintProgramHeaderData(elf_header, ph_entries)
+
+	// ParseSectionHeaderTable(file_bytes, elf_header)
+
+	// PrintSectionHeaderData(elf_header, ParseSectionHeaderTable(file_bytes, elf_header))
+
+	app := &cli.App{
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Usage:   "Load configuration from `FILE`",
+			},
+		},
+	}
+
+	err := app.Run(os.Args)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
