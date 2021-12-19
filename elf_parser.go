@@ -14,25 +14,30 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"fmt"
-	"log"
+	"fmt" // imports as package "cli"
 	"os"
-
-	"github.com/urfave/cli/v2"
+	"text/tabwriter"
 )
 
 const (
-	ELF_FILENAME                  = "binary_examples/elf-Linux-x86-bash"
-	ELFMAGIC                      = "\177ELF"
-	EI_NIDENT                     = 16 // Size of e_ident array
-	ElfHeaderFileInfoPrintLine    = "Class:\t\t\t\t\t%s\nData:\t\t\t\t\t%s\nVersion:\t\t\t\t%d\nOS/ABI:\t\t\t\t\t%s\nABI Version:\t\t\t\t%d\nFile Type:\t\t\t\t%s\nSupported machine:\t\t\t%s\n"
-	ElfHeaderOffsetsInfoPrintLine = "File version:\t\t\t\t0x%x\nEntry point address:\t\t\t0x%x\nStart of program headers:\t\t%d (bytes into file)\nStart of section headers:\t\t%d (bytes into file)\nFlags\t\t\t\t\t0x%d\nSize of this header:\t\t\t%d (bytes)\nSize of program header:\t\t\t%d (bytes)\nNumber of program headers: \t\t%d\nSize of section headers\t\t\t%d (bytes)\nNumber of section headers:\t\t%d\nSection header string table index:%d\n\n"
+	// ELF Consts
+	ELF_FILENAME = "binary_examples/elf-Linux-x86-bash"
+	ELFMAGIC     = "\177ELF"
+	EI_NIDENT    = 16 // Size of e_ident array
+
+	// Print Consts
+	ElfHeaderFileInfoPrintLine    = "Class:\t%s\nData:\t%s\nVersion:\t%d\nOS/ABI:\t%s\nABI Version:\t%d\nFile Type:\t%s\nSupported machine:\t%s\n"
+	ElfHeaderOffsetsInfoPrintLine = "File version:\t0x%x\nEntry point address:\t0x%x\nStart of program headers:\t%d (bytes into file)\nStart of section headers:\t%d (bytes into file)\nFlags\t0x%d\nSize of this header:\t%d (bytes)\nSize of program header:\t%d (bytes)\nNumber of program headers: \t%d\nSize of section headers\t%d (bytes)\nNumber of section headers:\t%d\nSection header string table index:%d\n\n"
 	ProgramHeaderGeneralInfo      = "ELF file type is %s\nEntry point 0x%x\nThere are %d program headers, starting at offset %d\n\nProgram headers:\n"
-	ProgramHeaderTableColumns     = "  Type\t\tOffset\t\tVirtAddr\t\tPhysAddr\t\tFileSiz\t\tMemSiz\t\tFlags\t\tAlign\n"
-	ProgramHeaderTableRow         = "  %s\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t%d\t%s\n\n"
+	ProgramHeaderTableColumns     = "  Type\tOffset\tVirtAddr\tPhysAddr\tFileSiz\tMemSiz\tFlags\tAlign\n"
+	ProgramHeaderTableRow         = "  %s\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t%d\t%s\n"
 	SectionHeaderGeneralInfo      = "There are %d section headers, starting at offset 0x%s:\n\nSection Headers:\n"
-	SectionHeaderTableColumns     = "  Name\t\tType\t\tAddress\t\tOffset\t\tSize\t\tEntSize\t\tFlags\tLink\t\tInfo\t\tAlign\n"
+	SectionHeaderTableColumns     = "  Name\tType\tAddress\tOffset\tSize\tEntSize\tFlags\tLink\tInfo\tAlign\n"
 	SectionHeaderTableRow         = "  %s\t%s\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t0x%x\t%s\n"
+
+	// Tables formating const
+	Padding        = 3
+	TableSeperator = ' '
 )
 
 type Elf32_Ehdr struct {
@@ -492,6 +497,8 @@ func PrintProgramHeaderData(elf_header Elf32_Ehdr, ph_entries []ReadableProgramH
 		It prints Program header tables as well as more basic info about the ELF
 	*/
 
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, Padding, TableSeperator, tabwriter.TabIndent|tabwriter.Debug)
+
 	object_type, _ := ParseElfHeader(elf_header)
 
 	fmt.Printf(ProgramHeaderGeneralInfo,
@@ -500,12 +507,13 @@ func PrintProgramHeaderData(elf_header Elf32_Ehdr, ph_entries []ReadableProgramH
 		elf_header.E_phnum,
 		elf_header.E_phoff,
 	)
-	fmt.Print(ProgramHeaderTableColumns)
+	fmt.Fprint(w, ProgramHeaderTableColumns)
 
 	// Iterate over entries slice
 	for _, entry := range ph_entries[1:] {
-		fmt.Printf(ProgramHeaderTableRow, entry.Type, entry.Offset, entry.VirtAddr, entry.PhysAddr, entry.FileSiz, entry.MemSiz, entry.Align, entry.Flags)
+		fmt.Fprintf(w, ProgramHeaderTableRow, entry.Type, entry.Offset, entry.VirtAddr, entry.PhysAddr, entry.FileSiz, entry.MemSiz, entry.Align, entry.Flags)
 	}
+	w.Flush()
 }
 
 func PrintSectionHeaderData(elf_header Elf32_Ehdr, sh_entries []ReadableSectionHeaderTableEntry) {
@@ -514,13 +522,16 @@ func PrintSectionHeaderData(elf_header Elf32_Ehdr, sh_entries []ReadableSectionH
 		It prints Section header tables as well as more basic info about the ELF
 	*/
 
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, Padding, TableSeperator, tabwriter.TabIndent|tabwriter.Debug)
+
 	sh_offset := fmt.Sprintf("%x", elf_header.E_shoff)
 	fmt.Printf(SectionHeaderGeneralInfo, elf_header.E_shnum, sh_offset)
-	fmt.Print(SectionHeaderTableColumns)
+	fmt.Fprint(w, SectionHeaderTableColumns)
 
 	for _, entry := range sh_entries[1:] {
-		fmt.Printf(SectionHeaderTableRow, entry.Name, entry.Type, entry.Address, entry.Offset, entry.Size, entry.Link, entry.Info, entry.AddrAlign, entry.EntSize, entry.Flags)
+		fmt.Fprintf(w, SectionHeaderTableRow, entry.Name, entry.Type, entry.Address, entry.Offset, entry.Size, entry.Link, entry.Info, entry.AddrAlign, entry.EntSize, entry.Flags)
 	}
+	w.Flush()
 }
 
 func main() {
@@ -532,30 +543,18 @@ func main() {
 		panic(err)
 	}
 
+	// Parse ELF header - Required for every option
 	elf_header := Elf32_Ehdr{}
 	binary.Read(bytes.NewBuffer(file_bytes), binary.LittleEndian, &elf_header)
 
-	//ph_entries := ParseProgramHeaderTable(file_bytes, elf_header)
+	// Print ELF header info
+	//PrintElfHeaderData(elf_header)
 
-	// PrintElfHeaderData(elf_header)
-	//PrintProgramHeaderData(elf_header, ph_entries)
+	// Parse ELF Program Header table
+	ph_entries := ParseProgramHeaderTable(file_bytes, elf_header)
+	PrintProgramHeaderData(elf_header, ph_entries)
 
-	// ParseSectionHeaderTable(file_bytes, elf_header)
-
-	// PrintSectionHeaderData(elf_header, ParseSectionHeaderTable(file_bytes, elf_header))
-
-	app := &cli.App{
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    "config",
-				Aliases: []string{"c"},
-				Usage:   "Load configuration from `FILE`",
-			},
-		},
-	}
-
-	err := app.Run(os.Args)
-	if err != nil {
-		log.Fatal(err)
-	}
+	// Parse ELF Section Header table
+	//sh_entries := ParseSectionHeaderTable(file_bytes, elf_header)
+	//PrintSectionHeaderData(elf_header, sh_entries)
 }
